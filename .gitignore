@@ -1,0 +1,9 @@
+# Intermediate compilation objects
+*.o
+*.disasm
+bootloader.c
+src/hardware.sage
+
+# Final bootloader images
+sageboot.elf
+sageboot.bin
