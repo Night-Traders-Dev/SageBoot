@@ -24,7 +24,7 @@ else ifeq ($(ARCH),arm64)
     CLANG_TARGET = aarch64-none-elf
     ASFLAGS = 
     LDFLAGS = -m aarch64elf -N
-    CLANG_FLAGS = 
+    CLANG_FLAGS = -march=armv8-a+nosimd
     ARCH_DIR = arch/arm64
 else ifeq ($(ARCH),mips)
     CROSS_COMPILE = mipsel-linux-gnu-

@@ -6,13 +6,13 @@
 .globl main
 
 _start:
-    # 1. Disable all machine interrupts (clear MIE in mstatus)
-    csrci   mstatus, 0x8
+    # 1. Disable all supervisor interrupts (clear SIE in sstatus)
+    csrci   sstatus, 0x2
 
-    # 2. Enable FPU (set mstatus.FS bits 14:13 = 0b01, Initial state)
+    # 2. Enable FPU (set sstatus.FS bits 14:13 = 0b01, Initial state)
     # This prevents illegal instruction exceptions when running double-precision float operations.
     li      t0, (1 << 13)
-    csrs    mstatus, t0
+    csrs    sstatus, t0
 
     # 3. Set up initial stack pointer (using stack_top defined in BSS)
     la      sp, stack_top

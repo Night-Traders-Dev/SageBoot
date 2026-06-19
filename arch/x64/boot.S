@@ -3,9 +3,18 @@
 
 .code32
 .section .multiboot
+.align 4
+multiboot1_header:
+    # Multiboot1 Magic
+    .long 0x1BADB002
+    # Flags (align modules to page boundaries + memory info)
+    .long 0x00000003
+    # Checksum
+    .long -(0x1BADB002 + 0x00000003)
+
 .align 8
 multiboot_header:
-    # Magic
+    # Magic (Multiboot2)
     .long 0xE85250D6
     # Architecture (0 = Protected mode i386)
     .long 0

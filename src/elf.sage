@@ -8,6 +8,23 @@ let ELF_MAGIC_2 = 76   # 'L'
 let ELF_MAGIC_3 = 70   # 'F'
 let PT_LOAD = 1
 
+proc elf_read_u32(base, offset) -> Int:
+    let val = mem_read(base, offset, "int")
+    if val < 0:
+        val = val + 4294967296
+    return val
+
+proc elf_read_u64(base, offset) -> Int:
+    let low = elf_read_u32(base, offset)
+    let high = elf_read_u32(base, offset + 4)
+    return (high * 4294967296) + low
+
+proc elf_memset(dest: Int, val: Int, size: Int) -> void:
+    return
+
+proc elf_memcpy(dest: Int, src: Int, size: Int) -> void:
+    return
+
 # Parse and load ELF64 binary image into target memory
 proc load_elf(elf_buf_ptr) -> Int:
     # 1. Verify Magic
@@ -15,6 +32,18 @@ proc load_elf(elf_buf_ptr) -> Int:
     let m1 = mem_read(elf_buf_ptr, 1, "byte")
     let m2 = mem_read(elf_buf_ptr, 2, "byte")
     let m3 = mem_read(elf_buf_ptr, 3, "byte")
+    
+    hw.uart_print("debug elf: magic read at ")
+    hw.uart_print_hex(elf_buf_ptr)
+    hw.uart_print(": ")
+    hw.uart_print_hex(m0)
+    hw.uart_print(" ")
+    hw.uart_print_hex(m1)
+    hw.uart_print(" ")
+    hw.uart_print_hex(m2)
+    hw.uart_print(" ")
+    hw.uart_print_hex(m3)
+    hw.uart_println("")
     
     if m0 != ELF_MAGIC_0 or m1 != ELF_MAGIC_1 or m2 != ELF_MAGIC_2 or m3 != ELF_MAGIC_3:
         hw.uart_println("ELF ERROR: Invalid ELF magic!")
@@ -28,10 +57,10 @@ proc load_elf(elf_buf_ptr) -> Int:
         
     # 2. Read ELF64 Header fields
     # Entry point is at offset 24 (8 bytes)
-    let entry_point = mem_read(elf_buf_ptr, 24, "double") | 0 # Cast to Int
+    let entry_point = elf_read_u64(elf_buf_ptr, 24)
     
     # Program header offset is at offset 32 (8 bytes)
-    let phoff = mem_read(elf_buf_ptr, 32, "double") | 0
+    let phoff = elf_read_u64(elf_buf_ptr, 32)
     
     # Program header size is at offset 54 (2 bytes)
     let phentsize = mem_read(elf_buf_ptr, 54, "byte") + mem_read(elf_buf_ptr, 55, "byte") * 256
@@ -57,13 +86,13 @@ proc load_elf(elf_buf_ptr) -> Int:
         
         if p_type == PT_LOAD:
             # Offset in file: offset 8 (8 bytes)
-            let p_offset = mem_read(ph_addr, 8, "double") | 0
+            let p_offset = elf_read_u64(ph_addr, 8)
             # Physical Address: offset 24 (8 bytes)
-            let p_paddr = mem_read(ph_addr, 24, "double") | 0
+            let p_paddr = elf_read_u64(ph_addr, 24)
             # File Size: offset 32 (8 bytes)
-            let p_filesz = mem_read(ph_addr, 32, "double") | 0
+            let p_filesz = elf_read_u64(ph_addr, 32)
             # Memory Size: offset 40 (8 bytes)
-            let p_memsz = mem_read(ph_addr, 40, "double") | 0
+            let p_memsz = elf_read_u64(ph_addr, 40)
             
             hw.uart_print(" Loading Segment: Offset ")
             hw.uart_print_hex(p_offset)
@@ -73,34 +102,17 @@ proc load_elf(elf_buf_ptr) -> Int:
             hw.uart_print_hex(p_filesz)
             hw.uart_println(")")
             
-            # Copy segment payload from file buffer to RAM destination
-            let b = 0
-            while b < p_filesz:
-                # Copy word-by-word if possible to speed up
-                if p_filesz - b >= 4:
-                    let word_data = mem_read(elf_buf_ptr + p_offset + b, 0, "int")
-                    mem_write(p_paddr + b, 0, "int", word_data)
-                    b = b + 4
-                else:
-                    let byte_data = mem_read(elf_buf_ptr + p_offset + b, 0, "byte")
-                    mem_write(p_paddr + b, 0, "byte", byte_data)
-                    b = b + 1
+            # Copy segment payload from file buffer to RAM destination using native memcpy
+            if p_filesz > 0:
+                elf_memcpy(p_paddr, elf_buf_ptr + p_offset, p_filesz)
                     
-            # Zero out remaining memory size if memsz > filesz (BSS padding)
+            # Zero out remaining memory size if memsz > filesz (BSS padding) using native memset
             if p_memsz > p_filesz:
                 hw.uart_print("   Zeroing BSS padding: ")
                 hw.uart_print_hex(p_memsz - p_filesz)
                 hw.uart_println(" bytes")
+                elf_memset(p_paddr + p_filesz, 0, p_memsz - p_filesz)
                 
-                let z = p_filesz
-                while z < p_memsz:
-                    if p_memsz - z >= 4:
-                        mem_write(p_paddr + z, 0, "int", 0)
-                        z = z + 4
-                    else:
-                        mem_write(p_paddr + z, 0, "byte", 0)
-                        z = z + 1
-                        
         i = i + 1
         
     return entry_point

@@ -139,21 +139,27 @@ proc run_ram_diagnostics() -> Bool:
     let base = hw.RAM_START
     let size = hw.RAM_SIZE
     
-    # Check 1MB and 16MB marks
-    let offset1 = base + 0x100000
-    let offset2 = base + 0x1000000
+    # Check 64MB and 96MB marks (away from bootloader and kernel load zones)
+    let offset1 = base + 0x4000000
+    let offset2 = base + 0x6000000
     
     # Skip if offset exceeds RAM size
-    if 0x1000000 >= size:
+    if 0x6000000 >= size:
         offset2 = base + (size / 2) | 0
         
     mem_write(offset1, 0, "int", 0x55AA55AA)
-    mem_write(offset2, 0, "int", 0xAA55AA55)
+    mem_write(offset2, 0, "int", 0x5A5A5A5A)
     
     let val1 = mem_read(offset1, 0, "int")
     let val2 = mem_read(offset2, 0, "int")
     
-    if val1 != 0x55AA55AA or val2 != 0xAA55AA55:
+    hw.uart_print("val1: ")
+    hw.uart_print_hex(val1)
+    hw.uart_print(", val2: ")
+    hw.uart_print_hex(val2)
+    hw.uart_println("")
+    
+    if val1 != 0x55AA55AA or val2 != 0x5A5A5A5A:
         return false
     return true
 

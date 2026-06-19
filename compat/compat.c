@@ -27,14 +27,14 @@ typedef struct {
 static char* heap_ptr = NULL;
 
 #if defined(__x86_64__)
-  #define HEAP_START 0x02000000 // 32MB mark
-  #define HEAP_MAX   0x04000000 // 64MB max
+  #define HEAP_START 0x04000000 // 64MB mark (above kernel ELF buffer)
+  #define HEAP_MAX   0x06000000
 #elif defined(__riscv)
-  #define HEAP_START 0x81000000 // Above kernel entry point (0x80200000)
-  #define HEAP_MAX   0x82000000
+  #define HEAP_START 0x84000000 // 64MB mark (above kernel ELF buffer)
+  #define HEAP_MAX   0x86000000
 #elif defined(__aarch64__)
-  #define HEAP_START 0x41000000 // Above AArch64 load point (0x40080000)
-  #define HEAP_MAX   0x42000000
+  #define HEAP_START 0x44000000 // 64MB mark (above kernel ELF buffer)
+  #define HEAP_MAX   0x46000000
 #elif defined(__mips__)
   #define HEAP_START 0x80800000 // 8MB mark for Netgear router DDR
   #define HEAP_MAX   0x82000000
@@ -379,8 +379,8 @@ void compat_uart_print(const char* s) {
     }
 }
 
-static void int_to_str(char* buf, int val, int base) {
-    char tmp[32];
+static void long_to_str(char* buf, long long val, int base) {
+    char tmp[64];
     int i = 0;
     if (val == 0) {
         buf[0] = '0';
@@ -392,7 +392,7 @@ static void int_to_str(char* buf, int val, int base) {
         is_neg = 1;
         val = -val;
     }
-    unsigned int uval = (unsigned int)val;
+    unsigned long long uval = (unsigned long long)val;
     while (uval > 0) {
         int rem = uval % base;
         tmp[i++] = (rem < 10) ? (rem + '0') : (rem - 10 + 'A');
@@ -408,15 +408,35 @@ static void int_to_str(char* buf, int val, int base) {
     buf[j] = '\0';
 }
 
+static void int_to_str(char* buf, int val, int base) {
+    long_to_str(buf, val, base);
+}
+
 int vsnprintf(char* str, size_t size, const char* format, va_list ap) {
     size_t written = 0;
     while (*format && written < size - 1) {
         if (*format == '%') {
             format++;
+            int is_long_long = 0;
+            if (*format == 'l') {
+                format++;
+                if (*format == 'l') {
+                    format++;
+                    is_long_long = 1;
+                } else {
+                    // Just single 'l', treat as long (same size as int or long long depending on target, but we'll fall back to standard)
+                    // For simplicity, do nothing special, format will be 'd' next
+                }
+            }
             if (*format == 'd') {
-                int val = va_arg(ap, int);
-                char buf[32];
-                int_to_str(buf, val, 10);
+                char buf[64];
+                if (is_long_long) {
+                    long long val = va_arg(ap, long long);
+                    long_to_str(buf, val, 10);
+                } else {
+                    int val = va_arg(ap, int);
+                    long_to_str(buf, val, 10);
+                }
                 char* p = buf;
                 while (*p && written < size - 1) {
                     str[written++] = *p++;
@@ -428,9 +448,14 @@ int vsnprintf(char* str, size_t size, const char* format, va_list ap) {
                     str[written++] = *val++;
                 }
             } else if (*format == 'x') {
-                int val = va_arg(ap, int);
-                char buf[32];
-                int_to_str(buf, val, 16);
+                char buf[64];
+                if (is_long_long) {
+                    long long val = va_arg(ap, long long);
+                    long_to_str(buf, val, 16);
+                } else {
+                    int val = va_arg(ap, int);
+                    long_to_str(buf, val, 16);
+                }
                 char* p = buf;
                 while (*p && written < size - 1) {
                     str[written++] = *p++;

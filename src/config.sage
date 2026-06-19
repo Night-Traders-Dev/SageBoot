@@ -20,10 +20,16 @@ proc parse_config(text: String):
 
 proc get_string(conf, key: String, default_val: String) -> String:
     if dict_has(conf, key):
-        return conf[key]
+        let val = conf[key]
+        if val != nil:
+            return val
     return default_val
 
 proc get_int(conf, key: String, default_val: Int) -> Int:
     if dict_has(conf, key):
-        return tonumber(conf[key])
+        let val = conf[key]
+        if val != nil:
+            let num = tonumber(val)
+            if num != nil:
+                return num
     return default_val
