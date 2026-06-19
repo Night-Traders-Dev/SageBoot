@@ -2,7 +2,7 @@
 # Supports: x64, rv64, arm64, mips (mipsel)
 
 ARCH ?= rv64
-SAGE_COMPILER = /root/Devel/sagelang/core/sage
+SAGE_COMPILER = /usr/local/bin/sage
 
 # Target Architecture configurations
 ifeq ($(ARCH),x64)
