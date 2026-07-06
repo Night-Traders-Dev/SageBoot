@@ -9,14 +9,29 @@ _start:
     // 1. Disable all interrupts (mask DAIF)
     msr     daifset, #0xf
 
-    // 2. Drop from EL2 to EL1 if booted in EL2 (common on QEMU/real hardware)
+    // 2. Determine current exception level
     mrs     x0, CurrentEL
     and     x0, x0, #12         // CurrentEL[3:2]
+    cmp     x0, #12             // EL3 = 12
+    b.ne    .Lcheck_el2
+    // At EL3: drop to EL2
+    // Set SCR_EL3: NS=1, RW=1 (AArch64 at lower levels), ST=1, FIQ=0, IRQ=0
+    mov     x0, #0x5            // NS | RW
+    msr     scr_el3, x0
+    // Set SPSR_EL3 to jump to EL2h with interrupts masked
+    mov     x0, #0x3cd          // EL2h mode with D, A, I, F masked
+    msr     spsr_el3, x0
+    adr     x0, .Lel2_setup
+    msr     elr_el3, x0
+    eret
+
+.Lcheck_el2:
     cmp     x0, #8              // EL2 = 8
     b.ne    .Lel1_setup
 
-    // If EL2, set up Hypervisor Configuration Register (HCR_EL2)
-    // Set RW bit (bit 31) to 1 (EL1 is AArch64)
+.Lel2_setup:
+    // At EL2: set up and drop to EL1
+    // Set HCR_EL2: RW=1 (EL1 is AArch64)
     mov     x0, #(1 << 31)
     msr     hcr_el2, x0
 

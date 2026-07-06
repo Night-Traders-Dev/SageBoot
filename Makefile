@@ -1,5 +1,5 @@
 # Makefile for SageBoot: Unified Bootloader for SageOS
-# Supports: x64, rv64, arm64, mips (mipsel)
+# Supports: x64, rv64, arm64, mips, rp2040, rp2350_arm, rp2350_rv
 
 ARCH ?= rv64
 SAGE_COMPILER = /usr/local/bin/sage
@@ -33,6 +33,33 @@ else ifeq ($(ARCH),mips)
     LDFLAGS = -EL -N
     CLANG_FLAGS = -mno-abicalls -fno-pic -G0
     ARCH_DIR = arch/mips
+else ifeq ($(ARCH),rp2040)
+    CROSS_COMPILE = arm-none-eabi-
+    CLANG_TARGET = thumbv6m-none-eabi
+    ASFLAGS =
+    LDFLAGS =
+    CLANG_FLAGS = -mcpu=cortex-m0plus -mthumb
+    ARCH_DIR = arch/rp2040
+    LIBGCC = $(shell arm-none-eabi-gcc -mcpu=cortex-m0plus -mthumb -print-libgcc-file-name 2>/dev/null)
+    CLANG_FLAGS += -fno-unwind-tables -fno-exceptions
+else ifeq ($(ARCH),rp2350_arm)
+    CROSS_COMPILE = arm-none-eabi-
+    CLANG_TARGET = thumbv8m.main-none-eabi
+    ASFLAGS =
+    LDFLAGS =
+    CLANG_FLAGS = -mcpu=cortex-m33 -mthumb -fno-unwind-tables -fno-exceptions
+    ARCH_DIR = arch/rp2350_arm
+    LIBGCC = $(shell arm-none-eabi-gcc -mcpu=cortex-m33 -mthumb -print-libgcc-file-name 2>/dev/null)
+else ifeq ($(ARCH),rp2350_rv)
+    CROSS_COMPILE = riscv64-linux-gnu-
+    CLANG_TARGET = riscv32-none-elf
+    ASFLAGS = -march=rv32imac -mabi=ilp32
+    LDFLAGS = -m elf32lriscv
+    CLANG_FLAGS = -march=rv32imac -mabi=ilp32
+    ARCH_DIR = arch/rp2350_rv
+    LIBGCC =
+    LINK_CMD = $(CC)
+    LINK_FLAGS = --ld-path=/usr/bin/riscv64-linux-gnu-ld -nostdlib $(CFLAGS) -T $(ARCH_DIR)/linker.ld
 else
     $(error Unknown architecture: $(ARCH))
 endif
@@ -42,6 +69,10 @@ LD      = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
 CC      = clang
+
+# Link command (can be overridden per-arch to use CC)
+LINK_CMD ?= $(LD)
+LINK_FLAGS ?= $(LDFLAGS) -T $(ARCH_DIR)/linker.ld
 
 # Freestanding C compiler flags
 CFLAGS = -target $(CLANG_TARGET) $(CLANG_FLAGS) -ffreestanding -nostdlibinc -Icompat/include -I$(ARCH_DIR) -O2 -Wall -Wextra
@@ -73,11 +104,11 @@ bootloader.o: bootloader.c
 	$(CC) $(CFLAGS) -c -o bootloader.o bootloader.c
 
 # Linker library paths
-LIBGCC := $(shell $(CROSS_COMPILE)gcc -print-libgcc-file-name 2>/dev/null)
+LIBGCC ?= $(shell $(CROSS_COMPILE)gcc -print-libgcc-file-name 2>/dev/null)
 
 # 3. Link sageboot
 sageboot.elf: $(OBJS) $(ARCH_DIR)/linker.ld
-	$(LD) $(LDFLAGS) -T $(ARCH_DIR)/linker.ld -o sageboot.elf $(OBJS) $(LIBGCC)
+	$(LINK_CMD) $(LINK_FLAGS) -o sageboot.elf $(OBJS) $(LIBGCC)
 
 sageboot.bin: sageboot.elf
 	$(OBJCOPY) -O binary sageboot.elf sageboot.bin

@@ -8,10 +8,13 @@ arch = sys.argv[1]
 
 # Heap configurations corresponding to compat.c
 heap_bounds = {
-    "x64":   (0x02000000, 0x04000000),
-    "rv64":  (0x81000000, 0x82000000),
-    "arm64": (0x41000000, 0x42000000),
-    "mips":  (0x80800000, 0x82000000)
+    "x64":        (0x02000000, 0x04000000),
+    "rv64":       (0x81000000, 0x82000000),
+    "arm64":      (0x41000000, 0x42000000),
+    "mips":       (0x80800000, 0x82000000),
+    "rp2040":     (0x20001000, 0x20040000),
+    "rp2350_arm": (0x20001000, 0x20080000),
+    "rp2350_rv":  (0x20001000, 0x20080000)
 }
 
 bounds = heap_bounds.get(arch, (0x01000000, 0x02000000))
@@ -44,6 +47,18 @@ elif arch == "x64":
         '    uintptr_t entry = (uintptr_t)arg0.as.number;\n'
         '    uintptr_t handoff = (uintptr_t)arg1.as.number;\n'
         '    __asm__ volatile("movq %0, %%rdi\\n\\tjmp *%1" :: "r"(handoff), "r"(entry));'
+    )
+elif arch == "rp2040" or arch == "rp2350_arm":
+    jump_code = (
+        '    uintptr_t entry = (uintptr_t)arg0.as.number;\n'
+        '    uintptr_t handoff = (uintptr_t)arg1.as.number;\n'
+        '    __asm__ volatile("mov r0, %1\\n\\tbx %0" :: "r"(entry), "r"(handoff));'
+    )
+elif arch == "rp2350_rv":
+    jump_code = (
+        '    uintptr_t entry = (uintptr_t)arg0.as.number;\n'
+        '    uintptr_t handoff = (uintptr_t)arg1.as.number;\n'
+        '    __asm__ volatile("mv a0, %0\\n\\tjr %1" :: "r"(handoff), "r"(entry));'
     )
 
 # 1. Locate line with the jump hook and insert the jump code

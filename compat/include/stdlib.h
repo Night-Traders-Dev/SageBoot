@@ -12,6 +12,7 @@ double strtod(const char* nptr, char** endptr);
 double atof(const char* nptr);
 int abs(int j);
 int rand(void);
+void srand(unsigned int seed);
 char* getenv(const char* name);
 int system(const char* command);
 #endif

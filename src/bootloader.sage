@@ -76,6 +76,24 @@ proc stage1_entry() -> void:
         let part2_offset = mem_read(trx_addr, 24, "int") # RootFS payload offset
         kernel_ptr = trx_addr + part1_offset
         kernel_size = part2_offset - part1_offset
+    elif hw.ARCH_NAME == "rp2040" or hw.ARCH_NAME == "rp2350_arm" or hw.ARCH_NAME == "rp2350_rv":
+        # RP2040/RP2350: kernel stored in flash at a 1MB offset (0x10300000 XIP address)
+        # The kernel is a raw binary or ELF file placed at a known offset in flash.
+        let kernel_flash_addr = 0x10300000
+        hw.uart_print("Reading kernel from XIP flash at ")
+        hw.uart_print_hex(kernel_flash_addr)
+        hw.uart_println("...")
+        
+        # Check the first 4 bytes for ELF magic to determine if it's a valid kernel
+        let check_magic = mem_read(kernel_flash_addr, 0, "int")
+        if check_magic == 0x464C457F: # "\x7fELF" little-endian
+            hw.uart_println("Found ELF kernel in flash.")
+            kernel_ptr = kernel_flash_addr
+            kernel_size = 0x100000 # Assume 1MB max for size discovery
+        else:
+            hw.uart_println("No valid kernel found at flash offset. Using mock kernel.")
+            kernel_ptr = hw.RAM_START + 0x01000000
+            kernel_size = 0x100000
     else:
         # For x86_64, RISC-V, and ARM64:
         # We simulate a mapped FAT filesystem disk image loaded in upper memory mark (e.g. at 20MB)

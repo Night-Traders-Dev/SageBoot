@@ -29,12 +29,21 @@ static char* heap_ptr = NULL;
 #if defined(__x86_64__)
   #define HEAP_START 0x02000000 // 32MB mark
   #define HEAP_MAX   0x04000000 // 64MB max
-#elif defined(__riscv)
+#elif defined(__riscv) && __riscv_xlen == 64
   #define HEAP_START 0x81000000 // Above kernel entry point (0x80200000)
   #define HEAP_MAX   0x82000000
+#elif defined(__riscv) && __riscv_xlen == 32
+  #define HEAP_START 0x20001000 // RP2350 RISC-V SRAM
+  #define HEAP_MAX   0x20080000
 #elif defined(__aarch64__)
   #define HEAP_START 0x41000000 // Above AArch64 load point (0x40080000)
   #define HEAP_MAX   0x42000000
+#elif defined(__ARM_ARCH_6M__)
+  #define HEAP_START 0x20001000 // RP2040 SRAM
+  #define HEAP_MAX   0x20040000
+#elif defined(__ARM_ARCH_8M_MAIN__)
+  #define HEAP_START 0x20001000 // RP2350 ARM SRAM
+  #define HEAP_MAX   0x20080000
 #elif defined(__mips__)
   #define HEAP_START 0x80800000 // 8MB mark for Netgear router DDR
   #define HEAP_MAX   0x82000000
@@ -119,6 +128,16 @@ void* memcpy(void* dest, const void* src, size_t n) {
     }
     return dest;
 }
+
+#if defined(__arm__)
+void __aeabi_memcpy4(void* dest, const void* src, size_t n) {
+    unsigned char* d = (unsigned char*)dest;
+    const unsigned char* sr = (const unsigned char*)src;
+    for (size_t i = 0; i < n; i++) {
+        d[i] = sr[i];
+    }
+}
+#endif
 
 void* memmove(void* dest, const void* src, size_t n) {
     unsigned char* d = (unsigned char*)dest;
@@ -261,6 +280,11 @@ int abs(int j) {
 }
 
 static unsigned long long next_rand = 1;
+
+void srand(unsigned int seed) {
+    next_rand = seed;
+}
+
 int rand(void) {
     next_rand = next_rand * 1103515245 + 12345;
     return (unsigned int)(next_rand / 65536) % 32768;
@@ -304,22 +328,62 @@ char compat_uart_getc(void) {
     return (char)inb(0x3F8);
 }
 
-#elif defined(__riscv)
+#elif defined(__riscv) && __riscv_xlen == 64
 
 #define RV_UART_BASE 0x10000000 // QEMU RV64 Virt 16550A UART
 
 void compat_uart_putc(char c) {
     volatile uint8_t* lsr = (volatile uint8_t*)(RV_UART_BASE + 5);
-    while ((*lsr & 0x20) == 0); // Wait for THRE
+    while ((*lsr & 0x20) == 0);
     volatile uint8_t* thr = (volatile uint8_t*)(RV_UART_BASE + 0);
     *thr = (uint8_t)c;
 }
 
 char compat_uart_getc(void) {
     volatile uint8_t* lsr = (volatile uint8_t*)(RV_UART_BASE + 5);
-    while ((*lsr & 0x01) == 0); // Wait for DR
+    while ((*lsr & 0x01) == 0);
     volatile uint8_t* rbr = (volatile uint8_t*)(RV_UART_BASE + 0);
     return (char)*rbr;
+}
+
+#elif defined(__riscv) && __riscv_xlen == 32
+
+#define RV32_UART_BASE 0x40054000 // RP2350 UART0
+
+void compat_uart_putc(char c) {
+    volatile uint32_t* fr = (volatile uint32_t*)(RV32_UART_BASE + 0x18);
+    while ((*fr & 0x20) != 0);
+    volatile uint32_t* dr = (volatile uint32_t*)(RV32_UART_BASE + 0x00);
+    *dr = (uint32_t)c;
+}
+
+char compat_uart_getc(void) {
+    volatile uint32_t* fr = (volatile uint32_t*)(RV32_UART_BASE + 0x18);
+    while ((*fr & 0x10) != 0);
+    volatile uint32_t* dr = (volatile uint32_t*)(RV32_UART_BASE + 0x00);
+    return (char)(*dr & 0xFF);
+}
+
+#elif defined(__ARM_ARCH_6M__) || defined(__ARM_ARCH_8M_MAIN__)
+
+#if defined(__ARM_ARCH_8M_MAIN__)
+#define PICO_UART_BASE 0x40054000 // RP2350 UART0
+#else
+#define PICO_UART_BASE 0x40034000 // RP2040 UART0
+#endif
+
+void compat_uart_putc(char c) {
+    volatile uint32_t* fr = (volatile uint32_t*)(PICO_UART_BASE + 0x18);
+    while ((*fr & 0x20) != 0);
+    volatile uint32_t* dr = (volatile uint32_t*)(PICO_UART_BASE + 0x00);
+    *dr = (uint32_t)c;
+}
+
+char compat_uart_getc(void) {
+    volatile uint32_t* fr = (volatile uint32_t*)(PICO_UART_BASE + 0x18);
+    while ((*fr & 0x10) != 0);
+    volatile uint32_t* dr = (volatile uint32_t*)(PICO_UART_BASE + 0x00);
+    return (char)(*dr & 0xFF);
 }
 
 #elif defined(__aarch64__)
@@ -746,10 +810,23 @@ clock_t clock(void) {
     unsigned int lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
     count = ((unsigned long)hi << 32) | lo;
-#elif defined(__riscv)
+#elif defined(__riscv) && __riscv_xlen == 64
     __asm__ volatile("rdtime %0" : "=r"(count));
+#elif defined(__riscv) && __riscv_xlen == 32
+    uint32_t cycle;
+    __asm__ volatile("rdcycle %0" : "=r"(cycle));
+    count = cycle;
 #elif defined(__aarch64__)
     __asm__ volatile("mrs %0, cntpct_el0" : "=r"(count));
+#elif defined(__ARM_ARCH_8M_MAIN__)
+    volatile uint32_t* dwt_ctrl = (volatile uint32_t*)0xE0001000;
+    if (*dwt_ctrl & 1) {
+        volatile uint32_t* dwt_cyccnt = (volatile uint32_t*)0xE0001004;
+        count = *dwt_cyccnt;
+    }
+#elif defined(__ARM_ARCH_6M__)
+    volatile uint32_t* stk_val = (volatile uint32_t*)0xE000E018;
+    count = *stk_val;
 #elif defined(__mips__)
     unsigned int c32;
     __asm__ volatile("mfc0 %0, $9" : "=r"(c32));
@@ -762,6 +839,7 @@ clock_t clock(void) {
  * Compiler-rt helpers (IEEE-754 double precision conversions)
  *==========================================================================*/
 
+#if !defined(__arm__) && !defined(__riscv)
 int64_t __fixdfdi(double a) {
     union {
         double d;
@@ -843,3 +921,464 @@ double __floatundidf(uint64_t a) {
     u.u = (((uint64_t)(exp + 1023) & 0x7FF) << 52) | (fraction & 0xFFFFFFFFFFFFFull);
     return u.d;
 }
+#endif
+
+/*==========================================================================
+ * RISC-V 32-bit soft-float compiler-rt stubs
+ *==========================================================================*/
+
+#if defined(__riscv) && __riscv_xlen == 32
+
+union df_bits {
+    double d;
+    uint64_t u;
+};
+
+#define DF_SIGN  0x8000000000000000ULL
+#define DF_EXP   0x7FF0000000000000ULL
+#define DF_MANT  0x000FFFFFFFFFFFFFULL
+#define DF_HIDDEN 0x0010000000000000ULL
+#define DF_BIAS  1023
+
+static int df_isnan(uint64_t u) {
+    return (u & DF_EXP) == DF_EXP && (u & DF_MANT) != 0;
+}
+
+static int df_isinf(uint64_t u) {
+    return (u & DF_EXP) == DF_EXP && (u & DF_MANT) == 0;
+}
+
+static int df_iszero(uint64_t u) {
+    return (u & ~DF_SIGN) == 0;
+}
+
+/* Comparisons: return -1/0/1 */
+
+int __eqdf2(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    if (df_isnan(ua.u) || df_isnan(ub.u)) return 1;
+    return ua.u == ub.u ? 0 : 1;
+}
+
+int __nedf2(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    if (df_isnan(ua.u) || df_isnan(ub.u)) return 1;
+    return ua.u != ub.u ? 1 : 0;
+}
+
+int __gtdf2(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    if (df_isnan(ua.u) || df_isnan(ub.u)) return 0;
+    int sa = (ua.u >> 63) & 1, sb = (ub.u >> 63) & 1;
+    if (sa != sb) return sb - sa;
+    return (ua.u > ub.u) ? 1 : (ua.u == ub.u ? 0 : -1);
+}
+
+int __gedf2(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    if (df_isnan(ua.u) || df_isnan(ub.u)) return -1;
+    return __gtdf2(a, b) >= 0 ? 1 : -1;
+}
+
+int __ltdf2(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    if (df_isnan(ua.u) || df_isnan(ub.u)) return 1;
+    int sa = (ua.u >> 63) & 1, sb = (ub.u >> 63) & 1;
+    if (sa != sb) return sa - sb;
+    return (ua.u < ub.u) ? -1 : (ua.u == ub.u ? 0 : 1);
+}
+
+int __ledf2(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    if (df_isnan(ua.u) || df_isnan(ub.u)) return 1;
+    return __ltdf2(a, b) <= 0 ? -1 : 1;
+}
+
+/* Conversions */
+
+float __truncdfsf2(double a) {
+    union df_bits ua = {a};
+    if (df_isnan(ua.u)) {
+        uint32_t n = 0x7FC00000;
+        float f;
+        __builtin_memcpy(&f, &n, 4);
+        return f;
+    }
+    if (df_isinf(ua.u)) {
+        uint32_t n = ((ua.u >> 63) ? 0xFF800000 : 0x7F800000);
+        float f;
+        __builtin_memcpy(&f, &n, 4);
+        return f;
+    }
+    if (df_iszero(ua.u)) {
+        uint32_t n = (uint32_t)(ua.u >> 32) & 0x80000000;
+        float f;
+        __builtin_memcpy(&f, &n, 4);
+        return f;
+    }
+    int exp = (int)((ua.u >> 52) & 0x7FF);
+    uint64_t mant = ua.u & DF_MANT;
+    if (exp == 0) mant |= 0; else mant |= DF_HIDDEN;
+    int newexp = exp - DF_BIAS + 127;
+    if (newexp >= 255) {
+        uint32_t n = ((ua.u >> 63) ? 0xFF800000 : 0x7F800000);
+        float f;
+        __builtin_memcpy(&f, &n, 4);
+        return f;
+    }
+    if (newexp <= 0) {
+        uint32_t n = (uint32_t)(ua.u >> 32) & 0x80000000;
+        float f;
+        __builtin_memcpy(&f, &n, 4);
+        return f;
+    }
+    uint32_t fmant = (uint32_t)(mant >> (52 - 23));
+    uint32_t fu = ((uint32_t)(ua.u >> 32) & 0x80000000) | ((uint32_t)newexp << 23) | (fmant & 0x7FFFFF);
+    float f;
+    __builtin_memcpy(&f, &fu, 4);
+    return f;
+}
+
+double __extendsfdf2(float a) {
+    uint32_t fu;
+    __builtin_memcpy(&fu, &a, 4);
+    if ((fu & 0x7F800000) == 0x7F800000) {
+        union df_bits u;
+        if (fu & 0x7FFFFF) {
+            u.u = ((uint64_t)(fu >> 31) << 63) | 0x7FF8000000000000ULL;
+        } else {
+            u.u = ((uint64_t)(fu >> 31) << 63) | 0x7FF0000000000000ULL;
+        }
+        return u.d;
+    }
+    if ((fu & 0x7F800000) == 0) {
+        union df_bits u;
+        u.u = (uint64_t)(fu >> 31) << 63;
+        return u.d;
+    }
+    int exp = (fu >> 23) & 0xFF;
+    uint32_t mant = fu & 0x7FFFFF;
+    uint64_t dmant = (uint64_t)mant << (52 - 23);
+    int newexp = exp - 127 + DF_BIAS;
+    union df_bits u;
+    u.u = ((uint64_t)(fu >> 31) << 63) | ((uint64_t)newexp << 52) | dmant;
+    return u.d;
+}
+
+unsigned int __fixunsdfsi(double a) {
+    union df_bits ua = {a};
+    if (ua.u <= 0x3FF0000000000000ULL) return 0;
+    if ((ua.u >> 63) & 1) return 0;
+    int exp = (int)((ua.u >> 52) & 0x7FF) - DF_BIAS;
+    if (exp > 31) return 0xFFFFFFFF;
+    uint64_t mant = (ua.u & DF_MANT) | DF_HIDDEN;
+    uint64_t result;
+    if (exp > 52) result = mant << (exp - 52);
+    else result = mant >> (52 - exp);
+    return (unsigned int)result;
+}
+
+int __fixdfsi(double a) {
+    union df_bits ua = {a};
+    if (ua.u == 0x8000000000000000ULL) return 0;
+    int sign = (ua.u >> 63) & 1;
+    if (sign) {
+        double pos = -a;
+        uint64_t u;
+        __builtin_memcpy(&u, &pos, 8);
+        int exp = (int)((u >> 52) & 0x7FF) - DF_BIAS;
+        if (exp < 0) return 0;
+        if (exp > 31) return 0x80000000;
+        uint64_t mant = (u & DF_MANT) | DF_HIDDEN;
+        uint64_t val;
+        if (exp > 52) val = mant << (exp - 52);
+        else val = mant >> (52 - exp);
+        return -(int)val;
+    }
+    int exp = (int)((ua.u >> 52) & 0x7FF) - DF_BIAS;
+    if (exp < 0) return 0;
+    if (exp > 31) return 0x7FFFFFFF;
+    uint64_t mant = (ua.u & DF_MANT) | DF_HIDDEN;
+    uint64_t val;
+    if (exp > 52) val = mant << (exp - 52);
+    else val = mant >> (52 - exp);
+    return (int)val;
+}
+
+double __floatunsidf(unsigned int a) {
+    if (a == 0) {
+        union df_bits u;
+        u.u = 0;
+        return u.d;
+    }
+    uint64_t val = a;
+    int lz = 0;
+    uint64_t t = val;
+    while ((t & (1ULL << 63)) == 0) { t <<= 1; lz++; }
+    int exp = 63 - lz;
+    uint64_t fraction;
+    if (exp <= 52) fraction = (val ^ (1ULL << exp)) << (52 - exp);
+    else fraction = (val ^ (1ULL << exp)) >> (exp - 52);
+    union df_bits u;
+    u.u = (((uint64_t)(exp + DF_BIAS) & 0x7FF) << 52) | (fraction & DF_MANT);
+    return u.d;
+}
+
+/* Arithmetic */
+
+double __adddf3(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    if (df_isnan(ua.u)) return a;
+    if (df_isnan(ub.u)) return b;
+    if (df_iszero(ua.u)) return b;
+    if (df_iszero(ub.u)) return a;
+    if (df_isinf(ua.u)) {
+        if (df_isinf(ub.u) && ua.u != ub.u) {
+            union df_bits nan;
+            nan.u = 0x7FF8000000000000ULL;
+            return nan.d;
+        }
+        return a;
+    }
+    if (df_isinf(ub.u)) return b;
+    int sa = (ua.u >> 63) & 1, sb = (ub.u >> 63) & 1;
+    int ea = (int)((ua.u >> 52) & 0x7FF), eb = (int)((ub.u >> 52) & 0x7FF);
+    uint64_t ma = (ua.u & DF_MANT), mb = (ub.u & DF_MANT);
+    if (ea) ma |= DF_HIDDEN; else ea = 1;
+    if (eb) mb |= DF_HIDDEN; else eb = 1;
+    uint64_t sign = 0;
+    if (ea < eb || (ea == eb && ma < mb)) {
+        int te = ea; ea = eb; eb = te;
+        uint64_t tm = ma; ma = mb; mb = tm;
+        int ts = sa; sa = sb; sb = ts;
+    }
+    int exp = ea;
+    int shift = ea - eb;
+    if (shift > 64) shift = 64;
+    mb >>= shift;
+    if (sa == sb) {
+        ma += mb;
+        if (ma & (1ULL << 53)) {
+            ma >>= 1;
+            exp++;
+        }
+    } else {
+        if (ma < mb) { uint64_t t = ma; ma = mb; mb = t; }
+        ma -= mb;
+        if (ma == 0) { union df_bits z; z.u = 0; return z.d; }
+        while ((ma & DF_HIDDEN) == 0) {
+            ma <<= 1;
+            exp--;
+        }
+        ma &= ~DF_HIDDEN;
+    }
+    sign = (uint64_t)sa << 63;
+    if (exp >= 0x7FF) {
+        union df_bits inf;
+        inf.u = sign | 0x7FF0000000000000ULL;
+        return inf.d;
+    }
+    if (exp <= 0) {
+        ma >>= (1 - exp);
+        exp = 0;
+    }
+    union df_bits r;
+    r.u = sign | ((uint64_t)exp << 52) | (ma & DF_MANT);
+    return r.d;
+}
+
+double __subdf3(double a, double b) {
+    union df_bits ub = {b};
+    ub.u ^= DF_SIGN;
+    return __adddf3(a, ub.d);
+}
+
+double __muldf3(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    if (df_isnan(ua.u)) return a;
+    if (df_isnan(ub.u)) return b;
+    if (df_isinf(ua.u)) {
+        if (df_iszero(ub.u)) { union df_bits n; n.u = 0x7FF8000000000000ULL; return n.d; }
+        union df_bits r; r.u = (ua.u ^ ub.u) & DF_SIGN; r.u |= 0x7FF0000000000000ULL; return r.d;
+    }
+    if (df_isinf(ub.u)) {
+        if (df_iszero(ua.u)) { union df_bits n; n.u = 0x7FF8000000000000ULL; return n.d; }
+        union df_bits r; r.u = (ua.u ^ ub.u) & DF_SIGN; r.u |= 0x7FF0000000000000ULL; return r.d;
+    }
+    if (df_iszero(ua.u) || df_iszero(ub.u)) {
+        union df_bits z;
+        z.u = (ua.u ^ ub.u) & DF_SIGN;
+        return z.d;
+    }
+    int result_sign = ((ua.u >> 63) & 1) ^ ((ub.u >> 63) & 1);
+    int ea = (int)((ua.u >> 52) & 0x7FF);
+    int eb = (int)((ub.u >> 52) & 0x7FF);
+    uint64_t ma = (ua.u & DF_MANT) | DF_HIDDEN;
+    uint64_t mb = (ub.u & DF_MANT) | DF_HIDDEN;
+    /* 64x64 -> 128 using 32-bit limbs */
+    uint32_t a0 = (uint32_t)ma, a1 = (uint32_t)(ma >> 32);
+    uint32_t b0 = (uint32_t)mb, b1 = (uint32_t)(mb >> 32);
+    uint64_t p00 = (uint64_t)a0 * b0;
+    uint64_t p01 = (uint64_t)a0 * b1;
+    uint64_t p10 = (uint64_t)a1 * b0;
+    uint64_t p11 = (uint64_t)a1 * b1;
+    uint64_t lo = p00;
+    uint64_t mid = p01 + p10 + (p00 >> 32);
+    uint64_t hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+    lo = (mid << 32) | (uint32_t)lo;
+    /* Determine if product has bit at position 105 (hi bit 41) */
+    int exp_adj;
+    uint64_t mant;
+    if (hi & 0x0000020000000000ULL) {
+        exp_adj = 53;
+        mant = (hi << 11) | (lo >> 53);
+    } else {
+        exp_adj = 52;
+        mant = (hi << 12) | (lo >> 52);
+    }
+    int exp = ea + eb - DF_BIAS + exp_adj;
+    if (exp >= 0x7FF) {
+        union df_bits inf;
+        inf.u = ((uint64_t)result_sign << 63) | 0x7FF0000000000000ULL;
+        return inf.d;
+    }
+    if (exp <= 0) {
+        mant >>= (1 - exp);
+        exp = 0;
+    }
+    union df_bits r;
+    r.u = ((uint64_t)result_sign << 63) | ((uint64_t)exp << 52) | (mant & DF_MANT);
+    return r.d;
+}
+
+double __divdf3(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    if (df_isnan(ua.u)) return a;
+    if (df_isnan(ub.u)) return b;
+    if (df_isinf(ua.u) && df_isinf(ub.u)) {
+        union df_bits n; n.u = 0x7FF8000000000000ULL; return n.d;
+    }
+    if (df_iszero(ua.u) && df_iszero(ub.u)) {
+        union df_bits n; n.u = 0x7FF8000000000000ULL; return n.d;
+    }
+    if (df_iszero(ua.u)) {
+        union df_bits z; z.u = (ua.u ^ ub.u) & DF_SIGN; return z.d;
+    }
+    if (df_isinf(ua.u)) {
+        union df_bits r; r.u = (ua.u ^ ub.u) & DF_SIGN; r.u |= 0x7FF0000000000000ULL; return r.d;
+    }
+    if (df_isinf(ub.u)) {
+        union df_bits z; z.u = (ua.u ^ ub.u) & DF_SIGN; return z.d;
+    }
+    if (df_iszero(ub.u)) {
+        union df_bits r; r.u = (ua.u ^ ub.u) & DF_SIGN; r.u |= 0x7FF0000000000000ULL; return r.d;
+    }
+    int sa = (ua.u >> 63) & 1, sb = (ub.u >> 63) & 1;
+    int result_sign = sa ^ sb;
+    int ea = (int)((ua.u >> 52) & 0x7FF), eb = (int)((ub.u >> 52) & 0x7FF);
+    uint64_t ma = (ua.u & DF_MANT), mb = (ub.u & DF_MANT);
+    if (ea) ma |= DF_HIDDEN;
+    if (eb) mb |= DF_HIDDEN;
+    int exp = ea - eb + DF_BIAS;
+    if (ma < mb) { ma <<= 1; exp--; }
+    uint64_t q = 0;
+    uint64_t rv = ma;
+    for (int i = 0; i < 53; i++) {
+        q <<= 1;
+        if (rv >= mb) { rv -= mb; q |= 1; }
+        rv <<= 1;
+    }
+    if (exp >= 0x7FF) {
+        union df_bits inf;
+        inf.u = ((uint64_t)result_sign << 63) | 0x7FF0000000000000ULL;
+        return inf.d;
+    }
+    if (exp <= 0) {
+        q >>= (1 - exp);
+        exp = 0;
+    }
+    union df_bits r;
+    r.u = ((uint64_t)result_sign << 63) | ((uint64_t)exp << 52) | (q & DF_MANT);
+    return r.d;
+}
+
+int __unorddf2(double a, double b) {
+    union df_bits ua = {a}, ub = {b};
+    return df_isnan(ua.u) || df_isnan(ub.u);
+}
+
+double __floatsidf(int a) {
+    if (a == 0) { union df_bits z; z.u = 0; return z.d; }
+    uint64_t sign = 0;
+    uint64_t val;
+    if (a < 0) { sign = DF_SIGN; val = (uint64_t)-(int64_t)a; }
+    else { val = (uint64_t)a; }
+    int lz = 0;
+    uint64_t t = val;
+    while ((t & (1ULL << 63)) == 0) { t <<= 1; lz++; }
+    int exp = 63 - lz;
+    uint64_t fraction;
+    if (exp <= 52) fraction = (val ^ (1ULL << exp)) << (52 - exp);
+    else fraction = (val ^ (1ULL << exp)) >> (exp - 52);
+    union df_bits u;
+    u.u = sign | (((uint64_t)(exp + DF_BIAS) & 0x7FF) << 52) | (fraction & DF_MANT);
+    return u.d;
+}
+
+uint64_t __fixunsdfdi(double a) {
+    union df_bits ua = {a};
+    if (ua.u <= 0x3FF0000000000000ULL) return 0;
+    if ((ua.u >> 63) & 1) return 0;
+    int exp = (int)((ua.u >> 52) & 0x7FF) - DF_BIAS;
+    if (exp > 63) return 0xFFFFFFFFFFFFFFFFULL;
+    uint64_t mant = (ua.u & DF_MANT) | DF_HIDDEN;
+    if (exp > 52) return mant << (exp - 52);
+    else return mant >> (52 - exp);
+}
+
+int64_t __fixdfdi(double a) {
+    union df_bits u = {a};
+    int sign = (u.u >> 63) ? -1 : 1;
+    int exp = (int)((u.u >> 52) & 0x7FF) - DF_BIAS;
+    uint64_t fraction = (u.u & DF_MANT) | DF_HIDDEN;
+    if (exp < 0) return 0;
+    if (exp > 63) return (sign == 1) ? 0x7FFFFFFFFFFFFFFFll : 0x8000000000000000ll;
+    uint64_t val;
+    if (exp > 52) val = fraction << (exp - 52);
+    else val = fraction >> (52 - exp);
+    return sign * (int64_t)val;
+}
+
+double __floatdidf(int64_t a) {
+    union df_bits u;
+    if (a == 0) { u.u = 0; return u.d; }
+    uint64_t sign = 0;
+    uint64_t val;
+    if (a < 0) { sign = DF_SIGN; val = (uint64_t)(-(int64_t)a); }
+    else { val = (uint64_t)a; }
+    int lz = 0;
+    uint64_t temp = val;
+    while ((temp & (1ULL << 63)) == 0) { temp <<= 1; lz++; }
+    int exp = 63 - lz;
+    uint64_t fraction;
+    if (exp <= 52) fraction = (val ^ (1ULL << exp)) << (52 - exp);
+    else fraction = (val ^ (1ULL << exp)) >> (exp - 52);
+    u.u = sign | (((uint64_t)(exp + DF_BIAS) & 0x7FF) << 52) | (fraction & DF_MANT);
+    return u.d;
+}
+
+double __floatundidf(uint64_t a) {
+    union df_bits u;
+    if (a == 0) { u.u = 0; return u.d; }
+    int lz = 0;
+    uint64_t temp = a;
+    while ((temp & (1ULL << 63)) == 0) { temp <<= 1; lz++; }
+    int exp = 63 - lz;
+    uint64_t fraction;
+    if (exp <= 52) fraction = (a ^ (1ULL << exp)) << (52 - exp);
+    else fraction = (a ^ (1ULL << exp)) >> (exp - 52);
+    u.u = (((uint64_t)(exp + DF_BIAS) & 0x7FF) << 52) | (fraction & DF_MANT);
+    return u.d;
+}
+
+#endif

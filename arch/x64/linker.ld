@@ -7,11 +7,8 @@ MEMORY
 
 SECTIONS
 {
-    .multiboot : {
-        *(.multiboot)
-    } > ram
-
     .text : {
+        *(.multiboot)
         _code = .;
         *(.text*)
         *(.rodata*)

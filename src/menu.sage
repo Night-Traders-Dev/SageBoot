@@ -15,6 +15,12 @@ proc show_menu(options: Array, timeout_sec: Int) -> Int:
         ticks_per_sec = 10000000   # QEMU rv64 timer frequency is 10MHz
     elif hw.ARCH_NAME == "arm64":
         ticks_per_sec = 62500000   # QEMU arm64 system counter frequency
+    elif hw.ARCH_NAME == "rp2040":
+        ticks_per_sec = 125000000  # RP2040 125MHz SysTick
+    elif hw.ARCH_NAME == "rp2350_arm":
+        ticks_per_sec = 150000000  # RP2350 150MHz DWT cycle counter
+    elif hw.ARCH_NAME == "rp2350_rv":
+        ticks_per_sec = 150000000  # RP2350 150MHz rdcycle
 
     let elapsed_sec = 0
     let last_printed_sec = -1
@@ -69,6 +75,11 @@ proc show_menu(options: Array, timeout_sec: Int) -> Int:
             # BCM5357 ChipCommon UART LSR (offset 0x14)
             if (mem_read(hw.UART0_LSR, 0, "byte") & 0x01) != 0:
                 input_char = mem_read(hw.UART0_DATA, 0, "byte")
+                has_char = true
+        elif hw.ARCH_NAME == "rp2040" or hw.ARCH_NAME == "rp2350_arm" or hw.ARCH_NAME == "rp2350_rv":
+            # PL011 UARTFR at offset 0x18, RXFE bit 4 (0 = data available)
+            if (mem_read(hw.UART_BASE + 0x18, 0, "int") & 0x10) == 0:
+                input_char = mem_read(hw.UART_BASE, 0, "int") & 0xFF
                 has_char = true
 
         if has_char:

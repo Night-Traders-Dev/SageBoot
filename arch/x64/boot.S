@@ -1,23 +1,18 @@
 # x86_64 Startup Assembly for SageBoot
-# Compliant with Multiboot2 specification, transitions to 64-bit Long Mode
+# Compliant with Multiboot1 specification, transitions to 64-bit Long Mode
 
 .code32
 .section .multiboot
-.align 8
+.align 4
 multiboot_header:
-    # Magic
-    .long 0xE85250D6
-    # Architecture (0 = Protected mode i386)
-    .long 0
-    # Header length
-    .long multiboot_header_end - multiboot_header
-    # Checksum
-    .long -(0xE85250D6 + 0 + (multiboot_header_end - multiboot_header))
-
-    # Multiboot2 tags here (none required for basic boot, but let's terminate)
-    .short 0    # Type 0 (End tag)
-    .short 0    # Flags 0
-    .long 8     # Size 8
+    .long 0x1BADB002           # magic
+    .long 0x00010003           # flags: MODALIGN(1) | MEMINFO(2) | ADDRFIELDS(0x10000)
+    .long -(0x1BADB002 + 0x00010003)  # checksum
+    .long 0x100000             # header_addr
+    .long 0x100000             # load_addr
+    .long 0                    # load_end_addr (0 = entire file)
+    .long _code_end            # bss_end_addr (for completeness)
+    .long _start               # entry_addr
 multiboot_header_end:
 
 .section .rodata
