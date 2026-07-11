@@ -32,9 +32,11 @@ if arch == "mips":
     )
 elif arch == "rv64":
     jump_code = (
+        '    extern uint64_t saved_hart_id;\n'
+        '    extern uint64_t saved_dtb_addr;\n'
         '    uintptr_t entry = (uintptr_t)arg0.as.number;\n'
         '    uintptr_t handoff = (uintptr_t)arg1.as.number;\n'
-        '    __asm__ volatile("mv a0, %0\\n\\tjr %1" :: "r"(handoff), "r"(entry));'
+        '    __asm__ volatile("mv a0, %0\\n\\tmv a1, %1\\n\\tmv a2, %2\\n\\tjr %3" :: "r"(saved_hart_id), "r"(saved_dtb_addr), "r"(handoff), "r"(entry));'
     )
 elif arch == "arm64":
     jump_code = (

@@ -1,9 +1,7 @@
 # RISC-V 64-bit Startup Assembly for SageBoot
 # Runs in S-mode (booted by OpenSBI on QEMU Virt platform)
 
-#ifndef UART_BASE
-#  define UART_BASE  0x10000000
-#endif
+.equ UART_BASE, 0x10000000
 
 .section .text.entry
 .globl _start
@@ -39,9 +37,13 @@ bss_zero_loop:
     j       bss_zero_loop
 bss_zero_done:
 
-    # 3. Jump to the main C function, passing hart_id and dtb_addr
-    mv      a0, s0
-    mv      a1, s1
+    # Save OpenSBI args to global memory for handoff
+    la      t0, saved_hart_id
+    sd      s0, 0(t0)
+    la      t0, saved_dtb_addr
+    sd      s1, 0(t0)
+
+    # 3. Jump to the main C function
     call    main
 
     # 4. Halt if main returns
@@ -54,3 +56,10 @@ halt_rv64:
 stack_bottom:
     .skip 32768      # 32KB stack for SageBoot
 stack_top:
+
+.globl saved_hart_id
+.globl saved_dtb_addr
+saved_hart_id:
+    .dword 0
+saved_dtb_addr:
+    .dword 0
