@@ -105,43 +105,68 @@ runtime's start-up, not the boot path. (The byte that arrived was `0x14` rather
 than the `0x2A` written, which is unexplained and is the first loose end to pick
 up; it may simply be a QEMU serial-file artefact.)
 
-### The actual first fault, and where it is *not*
+### The actual first fault, and what has been ruled out
 
-With the diagnostic IDT installed the exception chain finally became readable, and
-it is short:
+With the diagnostic IDT installed the exception chain is short and readable:
 
 ```
-0: v=06  #UD  at pc=0x100d40  EAX=00000914  SP=0011ce9c
-1: v=0d e=0032  #PF
-2: v=08  #DF
+0: #UD  at pc=0x100d40  EAX=0x914  SP=0x11ce9c
+1: #PF  e=0x32
+2: #DF
 ```
 
-The load-bearing detail is that **`0x100d40` is mid-instruction**: the
-instruction there is the `call sage_gc_mark_value` at `0x100d3d`, which is five
-bytes long. An `#UD` reported part-way through an instruction is not that
-instruction being invalid -- it means control flow arrived at `0x100d40` from
-somewhere else. So the fault is a **jumped-to-a-bogus-address** in the GC
-root-marking loop, not an illegal opcode in the boot path.
+`0x100d40` is **mid-instruction**: the instruction there is the
+`call sage_gc_mark_value` at `0x100d3d`, five bytes long. An `#UD` reported
+part-way through an instruction is not that instruction being invalid -- it means
+control flow arrived there from elsewhere. So this is a jumped-to-a-bogus-address
+in the GC's array-marking loop, not an illegal opcode in the boot path.
 
-Two loose ends remain on the diagnostics themselves, both recorded so they are
-not mistaken for findings:
+**Proven this round, all of it measured rather than inferred:**
 
-- The IDT still does not take effect. `IDTR` reads back as base `0x000f61fe`,
-  limit `0`, where the data in the image is plainly limit `0x07ff`, base
-  `0x100110`. The `lidt` block does execute. The `q` suffix makes no difference
-  to the encoding because `LIDT` is a 10-byte-operand instruction in 64-bit mode
-  anyway. Until that is resolved the panic handler cannot run, so the `#UD` was
-  read from QEMU's own exception log rather than from our handler.
-- The `0x14` byte that arrived when a raw `outb` marker was written is most
-  likely SeaBIOS output after the triple fault rather than our marker, since we
-  never reached that code either. It should not be read as evidence that port
-  I/O works from the Sage side; the earlier conclusion that it did was too
-  confident.
+- **Port I/O works.** A raw `outb` of `0x41` written by the *first instruction*
+  of the image reaches the console. So the ROM loads the image at the address we
+  think, the first instruction executes, COM1 is the QEMU serial device, and
+  `-serial file:` captures it. Every earlier claim that the console was dead was
+  wrong, including the claim that a `0x14` byte proved port I/O -- that byte was
+  almost certainly SeaBIOS output after the triple fault.
+- **The `switch (value.type)` jump table is correct.** `sage_gc_mark_value`
+  dispatches with `jmp *0x110c40(,%rdi,8)`. All 13 entries were read out of the
+  ELF and each lands inside `.text`, at plausible per-case addresses. So the
+  codegen is fine.
+- **Every `value.type` reaching the GC is in range.** A guard was added to
+  `sage_gc_mark_value` that reports and halts on a tag outside 0..12, using raw
+  port I/O. It never fired. So a wild jump is *not* an out-of-range type tag.
+- **`LIDT` does not take effect.** `sidtq` read back from inside the guest
+  gives an IDT limit whose low byte is `0xd2`, not the `0x07ff` that was
+  installed, and a base that is not `0x100110`. The `lidtq` block provably
+  executes, and the 10-byte pointer in the image is byte-for-byte correct
+  (limit `0x07ff`, base `0x0000000000100110`). The `q` suffix changes nothing,
+  because `LIDT` takes a 10-byte operand in 64-bit mode regardless.
 
-Next steps, in order: get `IDTR` to actually hold the table (so the handler runs
-and reports from inside the guest); then look at the GC root-marking loop around
-`0x100d3d` for a corrupted return address or indirect target; then replace the
-diagnostic IDT with real handlers.
+**The IDTR readback itself is unreliable** and was removed: it emitted one byte
+of the ten it should have. That is the third diagnostic in a row to behave
+unexpectedly on this target, and it is why the IDT is still not delivering
+reports from inside the guest.
+
+Two earlier misreadings worth recording so they are not repeated: the
+`mov -0x8(%rax,%r14,1),%edi` in the array loop is a 32-bit *int* field for the
+`SageValue` struct-passing ABI, not a truncated pointer; and the loop's stride of
+16 is `sizeof(SageValue)`, which is correct on x86-64. A compiled probe confirms
+`SageValue`=16, `SageSlot`=24, `SageFunction`=40, all as expected.
+
+**Honest status: x64 does not work yet.** The boot path is sound -- long mode,
+paging, the GDT, port I/O and entry to `main` are all confirmed -- and the
+remaining fault is in the Sage runtime's GC, which walks a corrupt array and
+jumps somewhere invalid. Because the same runtime boots correctly on rv64, this
+is not x64-specific in the boot code; it is a runtime/GC issue that this
+allocator and layout happen to expose.
+
+Next steps, in order: work out why `LIDT` does not load the table (the image data
+is provably correct, so the fault is in how the descriptor is being read or in
+the segment state at that point); then, with the in-guest handler working, get a
+report from the GC walk itself; then replace the diagnostic IDT with real
+handlers. The diagnostic IDT, the panic handler and the first-instruction marker
+are all left in place because each is individually proven to work.
 
 **arm64** hits a SIMD/FP alignment fault. **rp2350_rv** produces only the OpenSBI
 banner -- the kernel is never reached, so the memory map or the QEMU load address

@@ -48,6 +48,16 @@ gdt64_pointer:
 .global main
 
 _start:
+    # First instruction of the image: one raw byte to COM1. Nothing before this
+    # point can be assumed, so it is the only output that is unambiguously ours.
+    # A 'A' appearing on the console proves the ROM loaded the image at the
+    # address we think, that the port is COM1, and that the QEMU serial device is
+    # wired to the capture file. Everything else in this file is diagnostic
+    # scaffolding and can be removed once the port is known good.
+    movw    $0x3F8, %dx
+    movb    $0x41, %al             # 'A'
+    outb    %al, %dx
+
     # Multiboot1 puts the info struct pointer in %ebx. It is saved in %edi
     # because %ebx is caller-saved and main() is a C function.
 
@@ -267,6 +277,9 @@ sage_x86_print_hex:
     .ascii "0123456789abcdef"
 
 .section .bss
+.align 8
+x86_idtr_dump:
+    .skip 16
 .align 4096
 pml4_table:
     .skip 4096
