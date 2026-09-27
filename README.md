@@ -10,7 +10,7 @@
 ![Language](https://img.shields.io/badge/language-SageLang%2BAsm%2BC-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-SageBoot is the unified, modular, multi-architecture bootloader for SageOS. It provides standard low-level hardware initialization, memory discovery, configuration parsing, secure kernel validation, and handoff across 7 target architectures.
+SageBoot is the unified, modular, multi-architecture bootloader for SageOS. It provides standard low-level hardware initialization, memory discovery, configuration parsing, secure kernel validation, and handoff across 8 target architectures.
 
 ## Supported Architectures
 
@@ -23,21 +23,46 @@ SageBoot is the unified, modular, multi-architecture bootloader for SageOS. It p
 | **rp2350_arm** | ARM Cortex-M33 (Raspberry Pi Pico 2) | 🟦 Builds | No QEMU support for Cortex-M33 |
 | **rp2350_rv** | RISC-V Hazard3 32-bit (RP2350) | 🟦 Builds | Links with soft-float ABI; custom compiler-rt stubs |
 | **mips** | MIPS32 r2 (BCM5357, WN3000RP) | 🟦 Builds | Needs `mipsel-linux-gnu-as` cross-toolchain |
+| **esp32** | Xtensa LX6 (ESP32-D0WD-V3 / ESP-WROOM-32) | 🟦 Builds | **Builds cleanly; not yet run on hardware.** Toolchain is not on `PATH` |
 
 ### Test Results
 
+The table above was written when rv64 booted under QEMU. That is no longer true,
+and the numbers below are current:
+
 ```
 $ bash test/test_all.sh
-  PASS: 1   FAIL: 3   SKIP: 3   Total: 7
+  PASS: 0   FAIL: 6   SKIP: 2   Total: 8
 
-  PASS  rv64        RISC-V 64 QEMU Virt           boots OK
-  FAIL  arm64       AArch64 QEMU Virt             no serial output
-  FAIL  x64         x86_64 PC (Multiboot)         no serial output
-  SKIP  rp2040      RP2040 Cortex-M0+             no QEMU available
-  SKIP  rp2350_arm  RP2350 ARM Cortex-M33         no QEMU available
-  FAIL  rp2350_rv   RP2350 RISC-V Hazard3         output mismatch
+  FAIL  rv64        RISC-V 64 QEMU Virt           build failed
+  FAIL  arm64       AArch64 QEMU Virt             build failed
+  FAIL  x64         x86_64 PC (Multiboot)         build failed
+  FAIL  rp2040      RP2040 Cortex-M0+             build failed
+  FAIL  rp2350_arm  RP2350 ARM Cortex-M33         build failed
+  FAIL  rp2350_rv   RP2350 RISC-V Hazard3         build failed
   SKIP  mips        MIPS 74Kc (Netgear WN3000RP)  missing cross-toolchain
+  SKIP  esp32       ESP32 Xtensa LX6              no QEMU available
 ```
+
+**All six previously-working architectures now fail to build.** This is
+pre-existing, not caused by the esp32 port: verified by stashing the esp32
+changes and building at HEAD, where rv64 and rp2040 fail identically with 17
+errors each. The cause is the `sage` compiler, not this tree. The current
+`/usr/local/bin/sage` emits C11 atomics (`atomic_load_explicit`,
+`memory_order_acquire`, `atomic_fetch_add_explicit`, ...) that these builds
+cannot satisfy: the arch configs are compiled by clang with `-target` and
+`-nostdlibinc`, where `<stdatomic.h>` is not reachable, and `compat/include/`
+has a `stdatomic.h` that the emitted C does not include. Implicit function
+declarations are an error under the current clang defaults, so it fails hard.
+
+Fixing that means either teaching `compat/include/stdatomic.h` to provide real
+single-core definitions, or adding GCC-style builtin-include paths the way the
+esp32 target does. **The esp32 target builds today precisely because it does
+not go through clang**: the Xtensa GCC supplies `<stdatomic.h>` itself, and the
+Makefile adds `-nostdinc` plus that directory back explicitly. So the esp32
+port is currently the only architecture in the tree that builds.
+
+**esp32 is a build, not a verified boot.** It has not been flashed or run.
 
 ## Architecture Layout
 
@@ -50,7 +75,8 @@ SageBoot/
 │   ├── mips/              # MIPS32 (mipsel / WN3000RP)
 │   ├── rp2040/            # RP2040 Cortex-M0+ (Raspberry Pi Pico)
 │   ├── rp2350_arm/        # RP2350 Cortex-M33 (Raspberry Pi Pico 2)
-│   └── rp2350_rv/         # RP2350 RISC-V Hazard3 (Raspberry Pi Pico 2)
+│   ├── rp2350_rv/         # RP2350 RISC-V Hazard3 (Raspberry Pi Pico 2)
+│   └── esp32/             # ESP32 Xtensa LX6 (classic ESP32, D0WD-V3)
 ├── compat/                # Cross-platform freestanding C library shims
 │   ├── compat.c           # Memory/string/printf + soft-float stubs
 │   └── include/           # Standard C header declarations
@@ -69,7 +95,7 @@ SageBoot/
 
 ## Key Features
 
-- **7 Target Architectures**: x86_64 (Multiboot v1), AArch64, RISC-V 64 (SBI), MIPS32, RP2040 (Cortex-M0+), RP2350 (ARM & RISC-V)
+- **8 Target Architectures**: x86_64 (Multiboot v1), AArch64, RISC-V 64 (SBI), MIPS32, RP2040 (Cortex-M0+), RP2350 (ARM & RISC-V), ESP32 (Xtensa LX6)
 - **Indentation-Based Logic**: Stage 1 bootloader written in **SageLang** for memory safety and readability
 - **Dynamic Boot Menu**: Built-in interactive text menu interface with customizable timeout settings
 - **Configuration Parsing**: Reads and parses `boot.cfg` to configure boot parameters dynamically
@@ -141,3 +167,63 @@ Architecture-specific documentation is available in [`docs/`](docs/):
 ## License
 
 MIT
+
+## ESP32 (Xtensa LX6)
+
+`ARCH=esp32`. Everything in `arch/esp32/` is derived from hardware facts
+verified on a real ESP32-D0WD-V3 rather than recalled:
+
+- `config.sage` — UART0 is `0x3FF40000`, and the **status register is at
+  `+0x1C`, not `+0x04`**. The same register serves both directions the Sage
+  sources need: bit 0 is `rxfifo_full` (what `menu.sage` polls) and bits 23:16
+  are `txfifo_cnt`. Writing to `+0x1C` pokes `txfifo_cnt` and the
+  write-1-to-clear interrupt bits and wedges the console, which looks exactly
+  like a firmware bug — it cost two debugging rounds before being pinned down.
+  Also defines `UART0_DATA`, `UART0_LSR` and `FLASH_BASE`, which
+  `bootloader.sage` and `menu.sage` reference but which **only the mips config
+  previously defined**; every other architecture was missing them.
+- `boot.S` — disarms the RTC, TG0 and TG1 watchdogs before anything else. The
+  ROM leaves all three armed and an image that does not disarm them is reset
+  before producing any output, which is indistinguishable from a failed image
+  load. Sets both `a1` and `a15`, because in the Xtensa windowed ABI `a15` is
+  the callee-saved stack pointer but every prologue's `entry a1, N` pushes onto
+  `a1`; setting only `a15` leaves nested calls walking off the end of whatever
+  the ROM left there. The entry is a single `j` stepping over the literal pool,
+  since `l32r` resolves only backwards and the ROM jumps to the start of the
+  loaded segment. All peripheral addresses come from the literal pool rather
+  than shift-built immediates: `movi` is 12-bit and `addi` 8-bit, so `0x3ff480a4`
+  cannot be formed by either.
+- `linker.ld` — IRAM0 at `0x40080000` for code and the `.data` initialisers,
+  and the single contiguous DRAM block `0x3FFCE000`–`0x40000000` for
+  `.bss`/heap/stack. Internal DRAM begins at `0x3FFB0000` and has a hole from
+  `0x3FFB6000` to `0x3FFCE000`. Two earlier ESP32 maps in this project treated
+  `0x3FFB0000` as 320 KB of "IRAM0" and `0x3FF80000` as DRAM; neither is true,
+  and because the ROM loader will write a `.data` image anywhere, both link and
+  flash cleanly and only fail at run time.
+
+The Xtensa toolchain ships with the Arduino ESP32 core rather than on `PATH`:
+
+```bash
+make ARCH=esp32                          # uses the default prefix
+make ARCH=esp32 XTENSA_PREFIX=/opt/xtensa
+```
+
+### Known limitation: `bootloader.sage` assumes a large-RAM target
+
+`src/bootloader.sage` is written for the QEMU targets and is **not yet correct
+for a real ESP32**:
+
+- It looks for the kernel at `hw.RAM_START + 0x01000000` — a 16 MB offset. The
+  ESP32 has 520 KB of internal SRAM in total, so that address is unmapped. The
+  app partition is at flash offset `0x10000`, i.e. `0x40010000` through DROM,
+  which is what `KERNEL_LOAD_ADDR` is set to in `arch/esp32/config.sage`.
+- It reads a hardcoded `boot.cfg` string rather than the real partition table
+  that `gen_partitions.py` writes at `0x8000`.
+- The only `FLASH_BASE`-based load path is the mips TRX one, guarded by
+  `if hw.ARCH_NAME == "mips"`.
+
+`src/bootloader.sage` is shared by every architecture, so giving esp32 different
+loader logic means either a per-arch loader source or moving the
+kernel-location decision behind a `config.sage` hook. That refactor is the
+remaining work before the ESP32 port can actually boot something, and it is
+deliberately not done here.

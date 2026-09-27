@@ -1382,3 +1382,19 @@ double __floatundidf(uint64_t a) {
 }
 
 #endif
+
+/* --- popen / pclose ------------------------------------------------------
+ * The Sage runtime's shell-command helper is built on popen/pclose. There is no
+ * shell in a bootloader and nothing to spawn, so both fail. Declared in
+ * compat/include/stdio.h; without these definitions the emitted C fails to
+ * compile for every freestanding architecture, not just esp32. */
+FILE* popen(const char* command, const char* type) {
+    (void)command;
+    (void)type;
+    return NULL;
+}
+
+int pclose(FILE* stream) {
+    (void)stream;
+    return -1;
+}

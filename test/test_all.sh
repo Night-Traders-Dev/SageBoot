@@ -152,9 +152,10 @@ TESTS=(
     ["rp2350_arm"]="RP2350 ARM Cortex-M33"
     ["rp2350_rv"]="RP2350 RISC-V Hazard3"
     ["mips"]="MIPS 74Kc (Netgear WN3000RP)"
+    ["esp32"]="ESP32 Xtensa LX6 (D0WD-V3)"
 )
 
-ARCH_ORDER=(rv64 arm64 x64 rp2040 rp2350_arm rp2350_rv mips)
+ARCH_ORDER=(rv64 arm64 x64 rp2040 rp2350_arm rp2350_rv mips esp32)
 
 declare -A PREFIXES
 PREFIXES=(
@@ -165,6 +166,8 @@ PREFIXES=(
     [rp2350_arm]=arm-none-eabi-
     [rp2350_rv]=riscv64-linux-gnu-
     [mips]=mipsel-linux-gnu-
+    # Not on PATH: the Xtensa toolchain ships with the Arduino ESP32 core.
+    [esp32]=${XTENSA_PREFIX:-$HOME/.arduino15/packages/esp32/tools/esp-x32/2601}/bin/xtensa-esp32-elf-
 )
 
 #-----------------------------------------------------------------------------

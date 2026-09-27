@@ -14,7 +14,11 @@ heap_bounds = {
     "mips":       (0x80800000, 0x82000000),
     "rp2040":     (0x20001000, 0x20040000),
     "rp2350_arm": (0x20001000, 0x20080000),
-    "rp2350_rv":  (0x20001000, 0x20080000)
+    "rp2350_rv":  (0x20001000, 0x20080000),
+    # ESP32: the whole usable internal-SRAM window, 0x3FFB0000-0x40000000,
+    # including the 0x3FFB6000-0x3FFCE000 hole. A pointer anywhere in
+    # there is a plausible address; there is no room above 0x40000000.
+    "esp32":      (0x3FFB0000, 0x40000000)
 }
 
 bounds = heap_bounds.get(arch, (0x01000000, 0x02000000))
