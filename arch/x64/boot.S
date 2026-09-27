@@ -175,7 +175,7 @@ long_mode_entry:
     # vanishing into a reboot loop. Replace it with a real handler before
     # trusting this port.
     movl    $idt64_pointer, %eax
-    lidt    (%rax)
+    lidtq   (%rax)
 
     # 13. Call C main
     # Argument 1: Multiboot2 info struct pointer (passed in %rdi from System V ABI)
@@ -203,9 +203,19 @@ sage_x86_idt_ptr:
     .short sage_x86_idt_end - sage_x86_idt - 1
     .long sage_x86_idt
 
+# In 64-bit mode LIDT reads a TEN-byte operand: a 16-bit limit followed by a
+# 64-bit base. This was the 6-byte 32-bit form (.short + .long), so the upper
+# four bytes of the base were taken from whatever followed in memory. QEMU
+# reported the result directly: "IDT=007f0000 000008a2" -- a base of 0x007f0000
+# for a table that actually lives at 0x100110. With a garbage IDT every fault
+# vectors somewhere useless, becomes a double fault, and resets, which is why
+# the panic handler was never reached and the original fault stayed invisible.
+#
+# Note the 32-bit form is still correct for gdt64_pointer above, because that
+# LGDT is emitted in .code32.
 idt64_pointer:
     .short sage_x86_idt_end - sage_x86_idt - 1
-    .long sage_x86_idt
+    .quad   sage_x86_idt
 
 .section .text
 # Print the vector number and the faulting RIP to COM1, then halt. Deliberately

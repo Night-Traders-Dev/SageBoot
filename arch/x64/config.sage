@@ -12,11 +12,17 @@ let UART_BASE: Int = 0x3F8 # COM1
 
 # Write a character to the serial UART COM1
 proc uart_putc(c: Int) -> void:
-    # COM1 Line Status Register is 0x3FD
-    # Wait until Transmit Holding Register is empty (bit 5)
-    while (mem_read(UART_BASE + 5, 0, "byte") & 0x20) == 0:
-        let dummy = 0
-    # Write to Transmitter Holding Register (THR) at 0x3F8
+    # COM1 Line Status Register is 0x3FD, Transmit Holding Register at 0x3F8.
+    #
+    # Bounded wait rather than an unbounded one. The original loop spun while
+    # THRE was clear, which is right if the UART is initialised and fatal if it
+    # is not: an uninitialised 16550 reads LSR = 0 forever, so the guest would
+    # deadlock on its very first character and produce no output whatsoever.
+    # Bounding it makes both cases observable -- characters come out either way,
+    # and a genuinely full FIFO means dropping some rather than hanging.
+    let spins = 0
+    while (mem_read(UART_BASE + 5, 0, "byte") & 0x20) == 0 and spins < 4096:
+        spins = spins + 1
     mem_write(UART_BASE, 0, "byte", c)
 
 proc uart_print(s: String) -> void:

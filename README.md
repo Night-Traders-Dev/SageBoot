@@ -105,10 +105,43 @@ runtime's start-up, not the boot path. (The byte that arrived was `0x14` rather
 than the `0x2A` written, which is unexplained and is the first loose end to pick
 up; it may simply be a QEMU serial-file artefact.)
 
-Next steps, in order: find out why `main` produces nothing before its first
-print (its prologue writes a long run of `movq $0, <global>` stores into `.bss`
-straight after storing `argc`/`argv`); then explain the `0x14`/`0x2A`
-discrepancy; then replace the diagnostic IDT with real handlers.
+### The actual first fault, and where it is *not*
+
+With the diagnostic IDT installed the exception chain finally became readable, and
+it is short:
+
+```
+0: v=06  #UD  at pc=0x100d40  EAX=00000914  SP=0011ce9c
+1: v=0d e=0032  #PF
+2: v=08  #DF
+```
+
+The load-bearing detail is that **`0x100d40` is mid-instruction**: the
+instruction there is the `call sage_gc_mark_value` at `0x100d3d`, which is five
+bytes long. An `#UD` reported part-way through an instruction is not that
+instruction being invalid -- it means control flow arrived at `0x100d40` from
+somewhere else. So the fault is a **jumped-to-a-bogus-address** in the GC
+root-marking loop, not an illegal opcode in the boot path.
+
+Two loose ends remain on the diagnostics themselves, both recorded so they are
+not mistaken for findings:
+
+- The IDT still does not take effect. `IDTR` reads back as base `0x000f61fe`,
+  limit `0`, where the data in the image is plainly limit `0x07ff`, base
+  `0x100110`. The `lidt` block does execute. The `q` suffix makes no difference
+  to the encoding because `LIDT` is a 10-byte-operand instruction in 64-bit mode
+  anyway. Until that is resolved the panic handler cannot run, so the `#UD` was
+  read from QEMU's own exception log rather than from our handler.
+- The `0x14` byte that arrived when a raw `outb` marker was written is most
+  likely SeaBIOS output after the triple fault rather than our marker, since we
+  never reached that code either. It should not be read as evidence that port
+  I/O works from the Sage side; the earlier conclusion that it did was too
+  confident.
+
+Next steps, in order: get `IDTR` to actually hold the table (so the handler runs
+and reports from inside the guest); then look at the GC root-marking loop around
+`0x100d3d` for a corrupted return address or indirect target; then replace the
+diagnostic IDT with real handlers.
 
 **arm64** hits a SIMD/FP alignment fault. **rp2350_rv** produces only the OpenSBI
 banner -- the kernel is never reached, so the memory map or the QEMU load address
