@@ -27,40 +27,66 @@ SageBoot is the unified, modular, multi-architecture bootloader for SageOS. It p
 
 ### Test Results
 
-The table above was written when rv64 booted under QEMU. That is no longer true,
-and the numbers below are current:
+### Current test results
 
 ```
 $ bash test/test_all.sh
-  PASS: 0   FAIL: 6   SKIP: 2   Total: 8
+  PASS: 1   FAIL: 3   SKIP: 4   Total: 8
 
-  FAIL  rv64        RISC-V 64 QEMU Virt           build failed
-  FAIL  arm64       AArch64 QEMU Virt             build failed
-  FAIL  x64         x86_64 PC (Multiboot)         build failed
-  FAIL  rp2040      RP2040 Cortex-M0+             build failed
-  FAIL  rp2350_arm  RP2350 ARM Cortex-M33         build failed
-  FAIL  rp2350_rv   RP2350 RISC-V Hazard3         build failed
+  PASS  rv64        RISC-V 64 QEMU Virt           boots OK
+  FAIL  arm64       AArch64 QEMU Virt             no serial output
+  FAIL  x64         x86_64 PC (Multiboot)         no serial output
+  SKIP  rp2040      RP2040 Cortex-M0+             no QEMU available
+  SKIP  rp2350_arm  RP2350 ARM Cortex-M33         no QEMU available
+  FAIL  rp2350_rv   RP2350 RISC-V Hazard3         output mismatch
   SKIP  mips        MIPS 74Kc (Netgear WN3000RP)  missing cross-toolchain
   SKIP  esp32       ESP32 Xtensa LX6              no QEMU available
 ```
 
-**All six previously-working architectures now fail to build.** This is
-pre-existing, not caused by the esp32 port: verified by stashing the esp32
-changes and building at HEAD, where rv64 and rp2040 fail identically with 17
-errors each. The cause is the `sage` compiler, not this tree. The current
-`/usr/local/bin/sage` emits C11 atomics (`atomic_load_explicit`,
-`memory_order_acquire`, `atomic_fetch_add_explicit`, ...) that these builds
-cannot satisfy: the arch configs are compiled by clang with `-target` and
-`-nostdlibinc`, where `<stdatomic.h>` is not reachable, and `compat/include/`
-has a `stdatomic.h` that the emitted C does not include. Implicit function
-declarations are an error under the current clang defaults, so it fails hard.
+**All eight architectures build. rv64 boots under QEMU.** The three failures are
+the pre-existing runtime problems listed in the table above, not build problems:
+arm64 hits a SIMD/FP alignment fault, x64's Multiboot v1 header is not detected
+by the QEMU fw_cfg path, and rp2350_rv produces only the OpenSBI banner -- the
+kernel is never reached.
 
-Fixing that means either teaching `compat/include/stdatomic.h` to provide real
-single-core definitions, or adding GCC-style builtin-include paths the way the
-esp32 target does. **The esp32 target builds today precisely because it does
-not go through clang**: the Xtensa GCC supplies `<stdatomic.h>` itself, and the
-Makefile adds `-nostdinc` plus that directory back explicitly. So the esp32
-port is currently the only architecture in the tree that builds.
+### The build regression that was fixed
+
+Until recently, all six previously-working clang architectures failed to
+*build*, with 17 errors each:
+
+```
+bootloader.c:293:29: error: call to undeclared function 'atomic_load_explicit'
+bootloader.c:293:70: error: use of undeclared identifier 'memory_order_acquire'
+bootloader.c:332:33: error: call to undeclared function 'atomic_fetch_add_explicit'
+```
+
+`compat/include/stdatomic.h` declared only `atomic_int` and `atomic_long` and
+nothing else, while the current `sage` compiler emits the full C11 atomics API
+and the emitted C *does* `#include <stdatomic.h>`. Implicit function
+declarations are a hard error under current clang defaults, so it was not a
+warning. The header is now a complete implementation.
+
+Two implementation details worth knowing before changing it again:
+
+- **Neither builtin family covers everything.** The older `__atomic_*` family is
+  complete but clang rejects a pointer to an `_Atomic` type as its address
+  argument ("address argument to atomic operation must be a pointer to
+  integer"). The C11-aware `__c11_atomic_*` family accepts those pointers, but
+  clang 21 provides no `__c11_atomic_compare_exchange`, `__c11_atomic_is_lock_free`,
+  `__c11_atomic_test_and_set` or `__c11_atomic_clear` -- verified by probing each
+  on `riscv64-none-elf`. So the types are plain integers and the atomicity comes
+  from the builtins. A bare read or write of an `atomic_int` outside these
+  functions is therefore not atomic; C11 already leaves that undefined and the
+  generated C does not do it, and layout stays identical to a real `_Atomic int`.
+- **Cortex-M0+ has no atomics at all.** ARMv6-M has no LDREX/STREX, so GCC emits
+  calls to `__atomic_load_4`, `__atomic_fetch_add_4` and
+  `__atomic_compare_exchange_4` in libatomic, which does not exist for a
+  freestanding link. That is hardware, not a missing header, so the whole family
+  is implemented in software for `__ARM_ARCH < 7` with interrupts masked
+  (CPSID/CPSIE) around each read-modify-write. Sound because SageBoot is
+  single-core and never enables interrupts; that is the premise, so it is stated
+  in the header rather than assumed. The `*_LOCK_FREE` macros report 0 there
+  instead of claiming 2.
 
 **esp32 is a build, not a verified boot.** It has not been flashed or run.
 
