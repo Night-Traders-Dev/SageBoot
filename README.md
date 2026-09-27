@@ -79,15 +79,36 @@ each step was confirmed from QEMU register dumps rather than guessed at:
    on QEMU's `pc` machine and the SSE state is initialised by the C runtime
    anyway.
 
-   **What remains: an `#UD` in `main`'s first basic block.** Its first block
-   contains only `push`/`mov`/`sub`/immediate stores, so the exact instruction
-   cannot be identified from outside. There is no IDT, so the fault is
-   unrecoverable: `#UD` -> `#PF` -> `#DF` -> triple fault -> reset -> SeaBIOS,
-   which is why nothing reaches the serial port. The next step is to install a
-   minimal IDT (a 256-entry table with a common handler that dumps the vector
-   number and `RIP`) so the fault becomes catchable, then bisect the Sage
-   runtime's startup. Alternatively, bisect by neutering the initialisation in
-   `main`, which writes a long run of `movq $0, <global>` stores into `.bss`.
+4. *Descriptor pointers were mis-encoded.* `lgdt`/`lidt` take a memory operand
+   only, and a RIP-relative reference to a table in `.rodata` was encoded by the
+   assembler with the symbol's **absolute** address in the displacement slot, so
+   the CPU read the pointer from the wrong place. The linker script merges
+   `.rodata` into `.text`, but the two are still separate input sections at
+   assembly time. Fixed by loading the address with an absolute 32-bit
+   `movl $sym, %eax` and using `(%eax)`, which is an `R_X86_64_32` the linker
+   resolves correctly. Note `lgdt` is emitted in `.code32`, so it needs `%eax`
+   rather than `%rax`.
+
+**Where x64 actually gets to now.** A minimal 256-entry IDT is installed, all
+entries pointing at a diagnostic handler that prints the vector number and the
+faulting RIP to COM1 and then halts. That is a diagnostic, not a real handler,
+and it should be replaced before this port is trusted -- but without it every
+fault was unrecoverable (`#UD` -> `#PF` -> `#DF` -> triple fault -> reset ->
+SeaBIOS), which is why the earlier failures destroyed their own evidence.
+
+With the IDT in place the guest runs for thousands of basic blocks with **no
+faults at all**, and a raw `outb` of a marker byte written immediately before
+`call main` does reach the serial port. So: the handoff works, long mode works,
+paging works, and port I/O works, and the guest does reach `main`. The remaining
+silence is therefore inside `main`, before its first `uart_print` -- the Sage
+runtime's start-up, not the boot path. (The byte that arrived was `0x14` rather
+than the `0x2A` written, which is unexplained and is the first loose end to pick
+up; it may simply be a QEMU serial-file artefact.)
+
+Next steps, in order: find out why `main` produces nothing before its first
+print (its prologue writes a long run of `movq $0, <global>` stores into `.bss`
+straight after storing `argc`/`argv`); then explain the `0x14`/`0x2A`
+discrepancy; then replace the diagnostic IDT with real handlers.
 
 **arm64** hits a SIMD/FP alignment fault. **rp2350_rv** produces only the OpenSBI
 banner -- the kernel is never reached, so the memory map or the QEMU load address

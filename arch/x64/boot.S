@@ -112,7 +112,8 @@ _start:
     # bootloader's 32-bit CS, which is invalid, and the resulting fault found an
     # IDT still describing the real-mode IVT. This ordering is the canonical
     # one: page tables, PAE, CR3, LME, lgdt, ljmp, then CR0.PG.
-    lgdt    (gdt64_pointer)
+    movl    $gdt64_pointer, %eax
+    lgdt    (%eax)
     ljmp    $0x08, $long_mode_entry
 
 .code64
@@ -158,6 +159,24 @@ long_mode_entry:
     # 12. Load 64-bit stack pointer
     movq    $stack_top, %rsp
 
+
+    # ---- minimal IDT, purely so faults are survivable ------------------
+    #
+    # Without an IDT the guest has none installed: IDTR is still the real-mode
+    # IVT (base 0, limit 0x3ff). That is survivable only as long as nothing
+    # faults, because a fault then vectors to base 0, which immediately faults
+    # again, and the second fault is a #DF, and a third is a triple fault and a
+    # reset. That is precisely why the #UD in main() showed up as "no serial
+    # output": the CPU reset back into SeaBIOS and the diagnostic information was
+    # destroyed along with the evidence.
+    #
+    # This is a diagnostic, not a real handler. It prints the vector number and
+    # the faulting RIP, then halts, so the failure is reported instead of
+    # vanishing into a reboot loop. Replace it with a real handler before
+    # trusting this port.
+    movl    $idt64_pointer, %eax
+    lidt    (%rax)
+
     # 13. Call C main
     # Argument 1: Multiboot2 info struct pointer (passed in %rdi from System V ABI)
     movq    %rbx, %rdi          # Restore from saved register
@@ -168,6 +187,74 @@ halt_x64:
     cli
     hlt
     jmp     halt_x64
+
+.code64
+.section .text
+# 256 descriptors, one per vector, all pointing at sage_x86_panic. L=1 so the
+# gate is a valid 64-bit code segment; the limit is irrelevant in long mode.
+.align 16
+sage_x86_idt:
+    .rept 256
+    .quad 0x00AF9A000000FFFF
+    .endr
+sage_x86_idt_end:
+
+sage_x86_idt_ptr:
+    .short sage_x86_idt_end - sage_x86_idt - 1
+    .long sage_x86_idt
+
+idt64_pointer:
+    .short sage_x86_idt_end - sage_x86_idt - 1
+    .long sage_x86_idt
+
+.section .text
+# Print the vector number and the faulting RIP to COM1, then halt. Deliberately
+# uses only raw port I/O: the runtime is exactly what is broken, so calling into
+# it here would be circular.
+sage_x86_panic:
+    movw    $0x3F8, %dx
+    movb    $0x0C, %al             # LF
+    outb    %al, %dx
+
+    # Print the stack: the CPU pushes SS, RSP, RFLAGS, CS and RIP, in that order
+    # from high address to low, so RIP is at 8(%rsp) and the vector number is the
+    # low byte of the first argument.
+    movq    8(%rsp), %rax           # faulting RIP
+    call    sage_x86_print_hex
+    movb    $0x20, %al
+    outb    %al, %dx
+    movzbq  (%rsp), %rdi            # vector number
+    call    sage_x86_print_hex
+    movb    $0x0A, %al
+    outb    %al, %dx
+
+.Lx86_halt:
+    cli
+    hlt
+    jmp     .Lx86_halt
+
+# Print %rdi as eight hex digits to COM1.
+sage_x86_print_hex:
+    pushq   %rbx
+    pushq   %rcx
+    movl    $8, %ecx
+.Lx86_hex_nibble:
+    rolq    $4, %rdi
+    movl    %edi, %ebx
+    andl    $0xF, %ebx
+    movl    $.Lx86_hex_digits, %esi
+    movzbq  (%rsi,%rbx), %rax
+    movw    $0x3F8, %dx
+    outb    %al, %dx
+    decl    %ecx
+    jnz     .Lx86_hex_nibble
+    popq    %rcx
+    popq    %rbx
+    ret
+
+.section .text
+.Lx86_hex_digits:
+    .ascii "0123456789abcdef"
 
 .section .bss
 .align 4096
