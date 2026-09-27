@@ -18,7 +18,7 @@ SageBoot is the unified, modular, multi-architecture bootloader for SageOS. It p
 |------|-------------|--------|-------|
 | **rv64** | RISC-V 64 (QEMU Virt, S-mode) | ✅ **Verified** | Boots via OpenSBI, prints banner and RAM test output |
 | **arm64** | AArch64 (QEMU Virt) | 🟡 Builds, QEMU WIP | SIMD/FP alignment fault in generated C code |
-| **x64** | x86_64 PC (Multiboot v1) | 🟡 Builds, QEMU WIP | Multiboot v1 header not detected by QEMU fw_cfg path |
+| **x64** | x86_64 PC (Multiboot v1) | 🟡 Reaches `main`, no output | 3 boot bugs fixed; one `#UD` left, see below |
 | **rp2040** | ARM Cortex-M0+ (Raspberry Pi Pico) | 🟦 Builds | No QEMU support for Cortex-M0+ |
 | **rp2350_arm** | ARM Cortex-M33 (Raspberry Pi Pico 2) | 🟦 Builds | No QEMU support for Cortex-M33 |
 | **rp2350_rv** | RISC-V Hazard3 32-bit (RP2350) | 🟦 Builds | Links with soft-float ABI; custom compiler-rt stubs |
@@ -44,10 +44,54 @@ $ bash test/test_all.sh
 ```
 
 **All eight architectures build. rv64 boots under QEMU.** The three failures are
-the pre-existing runtime problems listed in the table above, not build problems:
-arm64 hits a SIMD/FP alignment fault, x64's Multiboot v1 header is not detected
-by the QEMU fw_cfg path, and rp2350_rv produces only the OpenSBI banner -- the
-kernel is never reached.
+runtime problems, not build problems.
+
+**x64: three real bugs found and fixed, one left.** The suite still reports "no
+serial output", but the guest now gets a great deal further than it used to, and
+each step was confirmed from QEMU register dumps rather than guessed at:
+
+1. *Long mode was entered with a 32-bit CS.* `CR0.PG` was set before the GDT was
+   loaded and before the far jump, so the very next instruction fetch ran in long
+   mode under the bootloader's 32-bit CS. The fault landed on an IDT that still
+   described the real-mode IVT (base 0, limit 0x3ff), so it escalated to a double
+   fault and then a reset. Observed directly: `CS=0008 CS64` with
+   `IDT=0000000000000000 000003ff` and `check_exception old: 0x8 new: 0xe`.
+   Reordered to the canonical sequence: page tables, PAE, CR3, LME, `lgdt`,
+   `ljmp`, then `CR0.PG`. `orq $0x80000001, %rax` also had to become two
+   `btsq`s -- a 64-bit immediate that large cannot be encoded in one `or`.
+2. *`.bss` was zeroed after the page tables were built.* `pml4_table` and
+   `pdp_table` live in `.bss`, and the clear was step 13 while the tables were
+   populated at step 3, so it wiped them and left `CR3` pointing at zeroes. The
+   clear now happens first, before anything is built.
+3. *The GDT descriptors were not long-mode descriptors.* `0x00209A0000000000`
+   and `0x0000920000000000` have comments claiming "64-bit" but decode to
+   `L=0` and limit `0` -- a 32-bit code segment and a zero-length data segment.
+   The far jump to selector 0x08 therefore loaded a 32-bit CS, long mode was
+   never entered, and the first segment load faulted (`8E /r` with `mod=11` needs
+   `REX.B` in 64-bit mode). Replaced with `0x00AF9A000000FFFF` and
+   `0x00CF92000000FFFF`. The Multiboot header's `bss_end_addr` also pointed at
+   `_code_end`, which is *below* `__bss_start`, so Multiboot1 was asked to zero a
+   backwards range; it now points at `__bss_end`.
+
+   After these, QEMU shows `CR0=8000801b` (PE+PG), `CR3=112000`, `CR4=61f`
+   (PAE, OSFXSR, OSXMMEXCPT) and execution reaching `main` at `0x1004e0` via
+   `call 1004e0 <main>`. An explicit `fninit` was also removed: it raised `#NM`
+   on QEMU's `pc` machine and the SSE state is initialised by the C runtime
+   anyway.
+
+   **What remains: an `#UD` in `main`'s first basic block.** Its first block
+   contains only `push`/`mov`/`sub`/immediate stores, so the exact instruction
+   cannot be identified from outside. There is no IDT, so the fault is
+   unrecoverable: `#UD` -> `#PF` -> `#DF` -> triple fault -> reset -> SeaBIOS,
+   which is why nothing reaches the serial port. The next step is to install a
+   minimal IDT (a 256-entry table with a common handler that dumps the vector
+   number and `RIP`) so the fault becomes catchable, then bisect the Sage
+   runtime's startup. Alternatively, bisect by neutering the initialisation in
+   `main`, which writes a long run of `movq $0, <global>` stores into `.bss`.
+
+**arm64** hits a SIMD/FP alignment fault. **rp2350_rv** produces only the OpenSBI
+banner -- the kernel is never reached, so the memory map or the QEMU load address
+is wrong rather than the image being malformed.
 
 ### The build regression that was fixed
 
